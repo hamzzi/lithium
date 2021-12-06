@@ -15,9 +15,9 @@ from typing import Any, Dict, List, Optional, Type, cast
 import pkg_resources
 
 from .interestingness.utils import rel_or_abs_import
-from .strategies import DEFAULT as DEFAULT_STRATEGY
+from .strategies import DEFAULT as DEFAULT_STRATEGY, Minimize
 from .strategies import Strategy
-from .testcases import DEFAULT as DEFAULT_TESTCASE
+from .testcases import DEFAULT as DEFAULT_TESTCASE, TestcaseLine
 from .testcases import Testcase
 from .util import LithiumError, quantity, summary_header
 
@@ -27,7 +27,7 @@ LOG = logging.getLogger(__name__)
 class Lithium:
     """Lithium reduction object."""
 
-    def __init__(self) -> None:
+    def __init__(self, testcase_filename) -> None:
 
         self.strategy: Optional[Strategy] = None
 
@@ -43,6 +43,8 @@ class Lithium:
         self.last_interesting: Optional[Testcase] = None
 
         self.temp_file_count = 1
+
+        self.testcase_filename = testcase_filename
 
     def main(self, argv: Optional[List[str]] = None) -> int:
         """Main entrypoint (parse args and call `run()`)
@@ -129,41 +131,24 @@ class Lithium:
 
         strategies: Dict[str, Type[Strategy]] = {}
         testcase_types: Dict[str, Type[Testcase]] = {}
-        for entry_point in pkg_resources.iter_entry_points("lithium_strategies"):
-            try:
-                strategy_cls = entry_point.load()
-                assert (
-                    strategy_cls.name == entry_point.name
-                ), "entry_point name mismatch, check setup.py and %s.name" % (
-                    strategy_cls.__name__,
-                )
-            except Exception as exc:  # pylint: disable=broad-except
-                LOG.warning("error loading strategy type %s: %s", entry_point.name, exc)
-                continue
-            strategies[entry_point.name] = strategy_cls
+        strategy_cls = Minimize
+        strategies[DEFAULT_STRATEGY] = strategy_cls    
         assert DEFAULT_STRATEGY in strategies
-        for entry_point in pkg_resources.iter_entry_points("lithium_testcases"):
-            try:
-                testcase_cls = entry_point.load()
-                assert testcase_cls.args
-                assert testcase_cls.arg_help
-            except Exception as exc:  # pylint: disable=broad-except
-                LOG.warning("error loading testcase type %s: %s", entry_point.name, exc)
-                continue
-            testcase_types[testcase_cls.atom] = testcase_cls
-            early_atoms.add_argument(
-                *testcase_cls.args,
-                action="store_const",
-                const=testcase_cls.atom,
-                dest="atom",
-            )
-            grp_atoms.add_argument(
-                *testcase_cls.args,
-                action="store_const",
-                const=testcase_cls.atom,
-                dest="atom",
-                help=testcase_cls.arg_help,
-            )
+        testcase_cls = TestcaseLine
+        testcase_types[testcase_cls.atom] = testcase_cls
+        early_atoms.add_argument(
+            *testcase_cls.args,
+            action="store_const",
+            const=testcase_cls.atom,
+            dest="atom",
+        )
+        grp_atoms.add_argument(
+            *testcase_cls.args,
+            action="store_const",
+            const=testcase_cls.atom,
+            dest="atom",
+            help=testcase_cls.arg_help,
+        )
         assert DEFAULT_TESTCASE in testcase_types
         early_parser.set_defaults(atom=DEFAULT_TESTCASE)
         # this is necessary so the first unrecognized option gets collected here
@@ -225,21 +210,12 @@ class Lithium:
 
         extra_args = args.extra_args[0]
 
-        if args.testcase:
-            testcase_filename = args.testcase
-        elif extra_args:
-            # can be overridden by --testcase in processOptions
-            testcase_filename = extra_args[-1]
-        else:
-            parser.error("No testcase specified (use --testcase or last condition arg)")
+        testcase_filename = self.testcase_filename
 
         LOG.info("Testcase type: %s", atom)
         self.testcase = testcase_types[atom]()
         self.testcase.handle_args(args)
         self.testcase.load(testcase_filename)
-
-        self.condition_script = rel_or_abs_import(extra_args[0])
-        self.condition_args = extra_args[1:]
 
     def testcase_temp_filename(
         self, filename_stem: str, use_number: bool = True
